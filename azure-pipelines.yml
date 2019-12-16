@@ -10,12 +10,12 @@ strategy:
       platform: 'Linux-Stub'
       imageName: 'ubuntu-latest'
       cmakeArgs: '-g ''Linux Makefiles'' -DQUIC_TLS=stub -DQUIC_ENABLE_LOGGING=off'
-      testCmd: 'artifacts/bin/quicattack -type:2 -ip:127.0.0.2:4567 -timeout:30000'
+      testCmd: 'artifacts/bin/quicattack -type:2 -ip:138.91.188.147:4444 -timeout:30000'
     windows-x64-stub:
       platform: 'Windows-x64-Stub'
       imageName: 'windows-latest'
       cmakeArgs: '-g ''Visual Studio 16 2019'' -A x64 -DQUIC_TLS=stub -DQUIC_ENABLE_LOGGING=off'
-      testCmd: 'artifacts\bin\release\quicattack.exe -type:2 -ip:127.0.0.2:4567 -timeout:30000'
+      testCmd: 'artifacts\bin\release\quicattack.exe -type:2 -ip:138.91.188.147:4444 -timeout:30000'
 
 pool:
   vmImage: $(imageName)
