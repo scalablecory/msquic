@@ -9,13 +9,11 @@ strategy:
     linux-stub:
       platform: 'Linux-Stub'
       imageName: 'ubuntu-latest'
-      prepareCmd: 'bash ./.azure/prepare_linux.sh'
       cmakeArgs: '-g ''Linux Makefiles'' -DQUIC_TLS=stub -DQUIC_ENABLE_LOGGING=off'
       testCmd: 'artifacts/bin/quicattack -type:2 -ip:127.0.0.2:4567 -timeout:30000'
     windows-x64-stub:
       platform: 'Windows-x64-Stub'
       imageName: 'windows-latest'
-      prepareCmd: '.\.azure\prepare_windows.cmd'
       cmakeArgs: '-g ''Visual Studio 16 2019'' -A x64 -DQUIC_TLS=stub -DQUIC_ENABLE_LOGGING=off'
       testCmd: 'artifacts\bin\release\quicattack.exe -type:2 -ip:127.0.0.2:4567 -timeout:30000'
 
@@ -26,11 +24,6 @@ steps:
 - checkout: self
   submodules: recursive
   persistCredentials: true
-
-- task: CmdLine@2
-  displayName: 'Prepare Image'
-  inputs:
-    script: '$(prepareCmd)'
 
 - task: CMake@1
   displayName: 'CMake Generator'
@@ -47,16 +40,3 @@ steps:
   timeoutInMinutes: 10
   inputs:
     script: '$(testCmd)'
-
-- task: PublishTestResults@2
-  displayName: 'Publish Test Results'
-  inputs:
-    testResultsFormat: 'JUnit'
-    testResultsFiles: '**/*test-results.xml'
-
-- task: PublishBuildArtifacts@1
-  displayName: 'Publish Artifacts'
-  inputs:
-    PathtoPublish: 'artifacts'
-    ArtifactName: '$(platform)-Artifacts'
-    publishLocation: 'Container'
