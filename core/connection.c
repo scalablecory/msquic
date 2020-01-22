@@ -98,6 +98,7 @@ QuicConnAlloc(
     QuicOperationQueueInitialize(&Connection->OperQ);
     QuicSendInitialize(&Connection->Send);
     QuicLossDetectionInitialize(&Connection->LossDetection);
+    QuicDatagramInitialize(&Connection->Datagram);
 
     QUIC_PATH* Path = &Connection->Paths[0];
     QuicPathInitialize(Connection, Path);
@@ -326,6 +327,7 @@ QuicConnFree(
     QuicOperationQueueUninitialize(&Connection->OperQ);
     QuicStreamSetUninitialize(&Connection->Streams);
     QuicSendBufferUninitialize(&Connection->SendBuffer);
+    QuicDatagramUninitialize(&Connection->Datagram);
     Connection->State.Freed = TRUE;
     if (Connection->Session != NULL) {
         QuicSessionUnregisterConnection(Connection->Session, Connection);
@@ -1346,9 +1348,11 @@ QuicConnTryClose(
         }
 
         //
-        // On initial close, we must shut down all the current streams.
+        // On initial close, we must shut down all the current streams and
+        // clean up pending datagrams.
         //
         QuicStreamSetShutdown(&Connection->Streams);
+        QuicDatagramShutdown(&Connection->Datagram);
     }
 
     if (SilentClose ||
@@ -1660,6 +1664,10 @@ QuicConnHandshakeConfigure(
         LocalTP.InitialMaxStreamDataBidiRemote = Connection->Session->Settings.StreamRecvWindowDefault;
         LocalTP.InitialMaxStreamDataUni = Connection->Session->Settings.StreamRecvWindowDefault;
         LocalTP.InitialMaxData = Connection->Send.MaxData;
+        LocalTP.MaxPacketSize =
+            MaxUdpPayloadSizeFromMTU(
+                QuicDataPathBindingGetLocalMtu(
+                    Connection->Paths[0].Binding->DatapathBinding));
         LocalTP.ActiveConnectionIdLimit = QUIC_ACTIVE_CONNECTION_ID_LIMIT;
         LocalTP.Flags =
             QUIC_TP_FLAG_INITIAL_MAX_DATA |
@@ -1670,10 +1678,6 @@ QuicConnHandshakeConfigure(
             QUIC_TP_FLAG_MAX_ACK_DELAY |
             /* QUIC_TP_FLAG_DISABLE_ACTIVE_MIGRATION | TODO - Add config option to re-enable if behind 4-tuple LB */
             QUIC_TP_FLAG_ACTIVE_CONNECTION_ID_LIMIT;
-        LocalTP.MaxPacketSize =
-            MaxUdpPayloadSizeFromMTU(
-                QuicDataPathBindingGetLocalMtu(
-                    Connection->Paths[0].Binding->DatapathBinding));
 
         if (Connection->IdleTimeoutMs != 0) {
             LocalTP.Flags |= QUIC_TP_FLAG_IDLE_TIMEOUT;
@@ -1729,6 +1733,11 @@ QuicConnHandshakeConfigure(
             Connection->OrigCID = NULL;
         }
 
+        if (Connection->Datagram.Enabled) {
+            LocalTP.Flags |= QUIC_TP_FLAG_MAX_DATAGRAM_FRAME_SIZE;
+            LocalTP.MaxDatagramFrameSize = QUIC_DEFAULT_MAX_DATAGRAM_LENGTH;
+        }
+
     } else {
 
         uint32_t InitialQuicVersion = QUIC_VERSION_LATEST;
@@ -1768,6 +1777,10 @@ QuicConnHandshakeConfigure(
         LocalTP.InitialMaxStreamDataBidiRemote = Connection->Session->Settings.StreamRecvWindowDefault;
         LocalTP.InitialMaxStreamDataUni = Connection->Session->Settings.StreamRecvWindowDefault;
         LocalTP.InitialMaxData = Connection->Send.MaxData;
+        LocalTP.MaxPacketSize =
+            MaxUdpPayloadSizeFromMTU(
+                QuicDataPathBindingGetLocalMtu(
+                    Connection->Paths[0].Binding->DatapathBinding));
         LocalTP.ActiveConnectionIdLimit = QUIC_ACTIVE_CONNECTION_ID_LIMIT;
         LocalTP.Flags =
             QUIC_TP_FLAG_INITIAL_MAX_DATA |
@@ -1777,10 +1790,6 @@ QuicConnHandshakeConfigure(
             QUIC_TP_FLAG_MAX_PACKET_SIZE |
             QUIC_TP_FLAG_MAX_ACK_DELAY |
             QUIC_TP_FLAG_ACTIVE_CONNECTION_ID_LIMIT;
-        LocalTP.MaxPacketSize =
-            MaxUdpPayloadSizeFromMTU(
-                QuicDataPathBindingGetLocalMtu(
-                    Connection->Paths[0].Binding->DatapathBinding));
 
         if (Connection->IdleTimeoutMs != 0) {
             LocalTP.Flags |= QUIC_TP_FLAG_IDLE_TIMEOUT;
@@ -1805,6 +1814,11 @@ QuicConnHandshakeConfigure(
             LocalTP.Flags |= QUIC_TP_FLAG_INITIAL_MAX_STRMS_UNI;
             LocalTP.InitialMaxUniStreams =
                 Connection->Streams.Types[STREAM_ID_FLAG_IS_SERVER | STREAM_ID_FLAG_IS_UNI_DIR].MaxTotalStreamCount;
+        }
+
+        if (Connection->Datagram.Enabled) {
+            LocalTP.Flags |= QUIC_TP_FLAG_MAX_DATAGRAM_FRAME_SIZE;
+            LocalTP.MaxDatagramFrameSize = QUIC_DEFAULT_MAX_DATAGRAM_LENGTH;
         }
     }
 
@@ -1832,6 +1846,7 @@ QuicConnProcessPeerTransportParameters(
     )
 {
     QuicTraceLogConnInfo(PeerTPSet, Connection, "Peer Transport Parameters Set");
+    Connection->State.PeerTransportParameterValid = TRUE;
 
     if (Connection->PeerTransportParams.Flags & QUIC_TP_FLAG_STATELESS_RESET_TOKEN) {
         QUIC_DBG_ASSERT(!QuicListIsEmpty(&Connection->DestCids));
@@ -1915,6 +1930,8 @@ QuicConnProcessPeerTransportParameters(
         Connection->PeerTransportParams.InitialMaxBidiStreams,
         Connection->PeerTransportParams.InitialMaxUniStreams,
         !FromCache);
+
+    QuicDatagramUpdateMaxLength(&Connection->Datagram);
 
     return;
 
@@ -2936,7 +2953,7 @@ QuicConnRecvPayload(
         // Read the frame type.
         //
         QUIC_FRAME_TYPE FrameType = Payload[Offset];
-        if (FrameType > MAX_QUIC_FRAME) {
+        if (!QUIC_FRAME_IS_KNOWN(FrameType)) {
             QuicTraceEvent(ConnError, Connection, "Unknown frame type");
             QuicConnTransportError(Connection, QUIC_ERROR_FRAME_ENCODING_ERROR);
             return FALSE;
@@ -3475,6 +3492,29 @@ QuicConnRecvPayload(
                 //
                 goto Done;
             }
+            break;
+        }
+
+        case QUIC_FRAME_DATAGRAM:
+        case QUIC_FRAME_DATAGRAM_1: {
+            QUIC_DBG_ASSERT(Connection->State.PeerTransportParameterValid);
+            if (Connection->PeerTransportParams.MaxDatagramFrameSize == 0) {
+                EventWriteQuicConnError(Connection, "Received DATAGRAM frame when not negotiated");
+                QuicConnTransportError(Connection, QUIC_ERROR_PROTOCOL_VIOLATION);
+                return FALSE;
+            }
+            if (!QuicDatagramProcessFrame(
+                    &Connection->Datagram,
+                    Packet,
+                    FrameType,
+                    PayloadLength,
+                    Payload,
+                    &Offset)) {
+                EventWriteQuicConnError(Connection, "Decoding DATAGRAM frame");
+                QuicConnTransportError(Connection, QUIC_ERROR_FRAME_ENCODING_ERROR);
+                return FALSE;
+            }
+            AckPacketImmediately = TRUE;
             break;
         }
 
@@ -4490,6 +4530,22 @@ QuicConnParamSet(
         Status = QUIC_STATUS_SUCCESS;
         break;
 
+    case QUIC_PARAM_CONN_DATAGRAMS:
+
+        if (BufferLength != sizeof(BOOLEAN)) {
+            Status = QUIC_STATUS_INVALID_PARAMETER;
+            break;
+        }
+
+        if (Connection->State.Started) {
+            Status = QUIC_STATUS_INVALID_STATE;
+            break;
+        }
+
+        QuicDatagramSetEnabledState(&Connection->Datagram, *(BOOLEAN*)Buffer);
+        Status = QUIC_STATUS_SUCCESS;
+        break;
+
     case QUIC_PARAM_CONN_TEST_TRANSPORT_PARAMETER:
 
         if (BufferLength != sizeof(QUIC_PRIVATE_TRANSPORT_PARAMETER)) {
@@ -4962,6 +5018,25 @@ QuicConnParamGet(
         Status = QUIC_STATUS_SUCCESS;
         break;
 
+    case QUIC_PARAM_CONN_DATAGRAMS:
+
+        if (*BufferLength < sizeof(BOOLEAN)) {
+            *BufferLength = sizeof(BOOLEAN);
+            Status = QUIC_STATUS_BUFFER_TOO_SMALL;
+            break;
+        }
+
+        if (Buffer == NULL) {
+            Status = QUIC_STATUS_INVALID_PARAMETER;
+            break;
+        }
+
+        *BufferLength = sizeof(BOOLEAN);
+        *(BOOLEAN*)Buffer = Connection->Datagram.Enabled;
+
+        Status = QUIC_STATUS_SUCCESS;
+        break;
+
     default:
         Status = QUIC_STATUS_INVALID_PARAMETER;
         break;
@@ -5055,6 +5130,10 @@ QuicConnProcessApiOperation(
                 ApiCtx->GET_PARAM.Param,
                 ApiCtx->GET_PARAM.BufferLength,
                 ApiCtx->GET_PARAM.Buffer);
+        break;
+
+    case QUIC_API_TYPE_DATAGRAM_SEND:
+        QuicDatagramSendFlush(&Connection->Datagram);
         break;
 
     default:

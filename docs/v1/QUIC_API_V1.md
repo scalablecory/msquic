@@ -45,6 +45,8 @@ typedef struct QUIC_API_V1 {
     QUIC_STREAM_RECEIVE_COMPLETE_FN     StreamReceiveComplete;
     QUIC_STREAM_RECEIVE_SET_ENABLED_FN  StreamReceiveSetEnabled;
 
+    QUIC_DATAGRAM_SEND_FN               DatagramSend;
+
 } QUIC_API_V1;
 ```
 
@@ -161,6 +163,10 @@ See [StreamReceiveComplete](StreamReceiveComplete.md)
 `StreamReceiveSetEnabled`
 
 See [StreamReceiveSetEnabled](StreamReceiveSetEnabled.md)
+
+`DatagramSend`
+
+See [DatagramSend](DatagramSend.md)
 
 # See Also
 

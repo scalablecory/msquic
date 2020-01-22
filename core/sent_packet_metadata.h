@@ -64,6 +64,10 @@ typedef struct QUIC_SENT_FRAME_METADATA {
             uint8_t Data[8];
             uint8_t OrigPathId;
         } PATH_RESPONSE;
+        struct {
+            const void* ClientContext;
+            const void* AckContext;
+        } DATAGRAM;
     };
     uint8_t Type; // QUIC_FRAME_*
     uint8_t Flags; // QUIC_SENT_FRAME_FLAG_*

@@ -83,6 +83,8 @@ typedef struct QUIC_API_PRIVATE {
     QUIC_STREAM_RECEIVE_COMPLETE_FN     StreamReceiveComplete;
     QUIC_STREAM_RECEIVE_SET_ENABLED_FN  StreamReceiveSetEnabled;
 
+    QUIC_DATAGRAM_SEND_FN               DatagramSend;
+
 } QUIC_API_PRIVATE;
 
 inline

@@ -482,6 +482,11 @@ QuicLossDetectionOnPacketAcknowledged(
             }
             break;
         }
+
+        case QUIC_FRAME_DATAGRAM:
+        case QUIC_FRAME_DATAGRAM_1:
+            QuicDatagramOnAck(&Connection->Datagram, &Packet->Frames[i]);
+            break;
         }
     }
 
@@ -633,6 +638,11 @@ QuicLossDetectionRetransmitFrames(
                     &Connection->Send,
                     QUIC_CONN_SEND_FLAG_PATH_CHALLENGE);
             }
+            break;
+
+        case QUIC_FRAME_DATAGRAM:
+        case QUIC_FRAME_DATAGRAM_1:
+            QuicDatagramOnLoss(&Connection->Datagram, &Packet->Frames[i]);
             break;
         }
         }

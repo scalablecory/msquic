@@ -38,6 +38,9 @@ typedef enum eSniNameType {
     TlsExt_Sni_NameType_HostName = 0
 } eSniNameType;
 
+//
+// Core Transport Parameters
+//
 #define QUIC_TP_ID_ORIGINAL_CONNECTION_ID                   0   // uint8_t[]
 #define QUIC_TP_ID_IDLE_TIMEOUT                             1   // varint
 #define QUIC_TP_ID_STATELESS_RESET_TOKEN                    2   // uint8_t[16]
@@ -54,7 +57,14 @@ typedef enum eSniNameType {
 #define QUIC_TP_ID_PREFERRED_ADDRESS                        13  // PreferredAddress
 #define QUIC_TP_ID_ACTIVE_CONNECTION_ID_LIMIT               14  // varint
 
-#define QUIC_TP_ID_MAX QUIC_TP_ID_ACTIVE_CONNECTION_ID_LIMIT
+//
+// Extensions
+//
+#define QUIC_TP_ID_MAX_DATAGRAM_FRAME_SIZE                  32  // varint
+
+#define QUIC_TP_ID_MAX QUIC_TP_ID_MAX_DATAGRAM_FRAME_SIZE
+
+QUIC_STATIC_ASSERT(QUIC_TP_ID_MAX < 64, "Only have 64 bits for duplicate detection");
 
 BOOLEAN
 QuicTpIdIsReserved(
@@ -601,6 +611,9 @@ QuicCryptoTlsEncodeTransportParameters(
     if (TransportParams->Flags & QUIC_TP_FLAG_ACTIVE_CONNECTION_ID_LIMIT) {
         RequiredTPLen += TLS_HDR_SIZE + QuicVarIntSize(TransportParams->ActiveConnectionIdLimit);
     }
+    if (TransportParams->Flags & QUIC_TP_FLAG_MAX_DATAGRAM_FRAME_SIZE) {
+        RequiredTPLen += TLS_HDR_SIZE + QuicVarIntSize(TransportParams->MaxDatagramFrameSize);
+    }
     if (Connection->State.TestTransportParameterSet) {
         RequiredTPLen += TLS_HDR_SIZE + Connection->TestTransportParameter.Length;
     }
@@ -742,6 +755,13 @@ QuicCryptoTlsEncodeTransportParameters(
                 TransportParams->ActiveConnectionIdLimit, TPBuf);
         QuicTraceLogConnVerbose(EncodeTPCIDLimit, Connection, "TP: Connection ID Limit (%llu)", TransportParams->ActiveConnectionIdLimit);
     }
+    if (TransportParams->Flags & QUIC_TP_FLAG_MAX_DATAGRAM_FRAME_SIZE) {
+        TPBuf =
+            TlsWriteTransportParamVarInt(
+                QUIC_TP_ID_MAX_DATAGRAM_FRAME_SIZE,
+                TransportParams->MaxDatagramFrameSize, TPBuf);
+        LogVerbose("[cryp][%p] TP: Max Datagram Frame Size (%llu bytes)", Connection, TransportParams->MaxDatagramFrameSize);
+    }
     if (Connection->State.TestTransportParameterSet) {
         TPBuf =
             TlsWriteTransportParam(
@@ -779,7 +799,7 @@ QuicCryptoTlsDecodeTransportParameters(
     )
 {
     BOOLEAN Result = FALSE;
-    uint32_t ParamsPresent = 0;
+    uint64_t ParamsPresent = 0;
     uint16_t Offset = 0;
 
     QuicZeroMemory(TransportParams, sizeof(QUIC_TRANSPORT_PARAMETERS));
@@ -819,12 +839,12 @@ QuicCryptoTlsDecodeTransportParameters(
 
         if (Id <= QUIC_TP_ID_MAX) {
 
-            if (ParamsPresent & (1 << Id)) {
+            if (ParamsPresent & (1ull << Id)) {
                 QuicTraceEvent(ConnErrorStatus, Connection, Id, "Duplicate QUIC TP type");
                 goto Exit;
             }
 
-            ParamsPresent |= (1 << Id);
+            ParamsPresent |= (1ull << Id);
         }
 
         //
@@ -1026,6 +1046,15 @@ QuicCryptoTlsDecodeTransportParameters(
             }
             TransportParams->Flags |= QUIC_TP_FLAG_ACTIVE_CONNECTION_ID_LIMIT;
             QuicTraceLogConnVerbose(DecodeTPCIDLimit, Connection, "TP: Connection ID Limit (%llu)", TransportParams->ActiveConnectionIdLimit);
+            break;
+
+        case QUIC_TP_ID_MAX_DATAGRAM_FRAME_SIZE:
+            if (!TRY_READ_VAR_INT(TransportParams->MaxDatagramFrameSize)) {
+                EventWriteQuicConnErrorStatus(Connection, Length, "Invalid length of QUIC_TP_ID_MAX_DATAGRAM_FRAME_SIZE");
+                goto Exit;
+            }
+            TransportParams->Flags |= QUIC_TP_FLAG_MAX_DATAGRAM_FRAME_SIZE;
+            LogVerbose("[cryp][%p] TP: Max Datagram Frame Size (%llu bytes)", Connection, TransportParams->MaxDatagramFrameSize);
             break;
 
         default:

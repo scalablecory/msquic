@@ -762,6 +762,8 @@ MsQuicOpen(
         ApiV1->StreamSend = MsQuicStreamSend;
         ApiV1->StreamReceiveComplete = MsQuicStreamReceiveComplete;
         ApiV1->StreamReceiveSetEnabled = MsQuicStreamReceiveSetEnabled;
+
+        ApiV1->DatagramSend = MsQuicDatagramSend;
         break;
     }
     case QUIC_API_VERSION_PRIVATE: {
@@ -809,6 +811,8 @@ MsQuicOpen(
         ApiPriv->StreamSend = MsQuicStreamSend;
         ApiPriv->StreamReceiveComplete = MsQuicStreamReceiveComplete;
         ApiPriv->StreamReceiveSetEnabled = MsQuicStreamReceiveSetEnabled;
+
+        ApiPriv->DatagramSend = MsQuicDatagramSend;
         break;
     }
     default: {

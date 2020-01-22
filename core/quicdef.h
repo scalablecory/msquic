@@ -365,6 +365,12 @@ QUIC_STATIC_ASSERT(
 //
 #define QUIC_INITIAL_PACKET_LENGTH              1280
 
+//
+// The default max_datagram_frame_length transport parameter value we send. Set
+// to max uint16 to not explicitly limit the length of datagrams.
+//
+#define QUIC_DEFAULT_MAX_DATAGRAM_LENGTH        0xFFFF
+
 /*************************************************************
                   PERSISTENT SETTINGS
 *************************************************************/
